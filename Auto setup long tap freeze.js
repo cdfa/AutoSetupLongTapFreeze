@@ -1,340 +1,422 @@
 var blackList = ["net.pierrox.lightning_launcher_extreme"]
   , whiteList = []
   // for Sources see: http://www.lightninglauncher.com/scripting/reference/api/reference/net/pierrox/lightning_launcher/script/api/Event.html
-  // for Event see http://www.lightninglauncher.com/scripting/reference/api/reference/net/pierrox/lightning_launcher/script/api/PropertySet.html
+  // for Events see http://www.lightninglauncher.com/scripting/reference/api/reference/net/pierrox/lightning_launcher/script/api/PropertySet.html
   // you may only have to set 1 in the future.
   , freezeSource = "I_LONG_CLICK"
-  , freezeEvent = "i.longTap"
-  , menuSource = "I_SWIPE_UP"
-  , menuEvent = "i.swipeUp";
-
-var logScript=LL.getScriptByName('logScript');if(logScript){try{return eval('(function(){'+logScript.getText()+'})()');}catch(e){if(e.message!="Custom view not found!"&&e.message!="Custom view not loaded!"){alert(e);}function log(){}}}else{function log(){}}/*logScriptEnd*/
+  , freezeEvent = "i.longTap";
  
-LL.bindClass("android.app.AlertDialog");
-LL.bindClass("android.content.DialogInterface");
-LL.bindClass("android.widget.Toast");
-LL.bindClass("android.content.pm.PackageManager");
-LL.bindClass('java.lang.Runtime');
-LL.bindClass('java.io.DataInputStream');
-LL.bindClass('java.io.DataOutputStream');
-LL.bindClass('java.lang.StringBuffer');
-LL.bindClass("java.lang.Runnable");
-LL.bindClass("java.lang.Thread");
-LL.bindClass("android.os.AsyncTask");
-
-var e = LL.getEvent();
-var it = e.getItem();
-var script = LL.getCurrentScript();
-var context = LL.getContext();
-var data = e.getData();
+bindClass("android.app.AlertDialog");
+bindClass("android.content.DialogInterface");
+bindClass("android.widget.Toast");
+bindClass("android.content.pm.PackageManager");
+bindClass('java.lang.Runtime');
+bindClass("java.io.DataInputStream")
+bindClass('java.io.DataOutputStream');
+bindClass('java.lang.StringBuffer');
+bindClass("java.lang.Runnable");
+bindClass("java.lang.Thread");
+bindClass("android.os.Handler");
+bindClass("android.os.Looper");
  
-function loanEventHandler(ob, name, action, data){
-  var prop = ob.getProperties();
-  var ed = prop.edit();
-  var evHa = prop.getEventHandler(name);
-  evHa = [evHa.getAction(), evHa.getData()];
-  ed.setEventHandler(name, action, data);
-  ed.commit();
-  ob.setTag("old "+name+" evHa", JSON.stringify(evHa));
-}
- 
-function returnEventHandler(ob, name){
-  var ed = ob.getProperties().edit();
-  var evHa = JSON.parse(ob.getTag("old "+name+" evHa"));
-  ed.setEventHandler(name, evHa[0], evHa[1]);
-  ed.commit();
-  ob.setTag("name", null);
-}
- 
-function customConfirmDialog(title,onConfirmFunction){
-  var builder=new AlertDialog.Builder(context);
+var script = getCurrentScript()
+  , screen = getActiveScreen()
+  , context = screen.getContext()
+  , frozenItIdss = []
+  , threads = []
+  , GUIHandler = new Handler()
+  , frozenApps;
+   
+function customConfirmDialog(title, onConfirmFunction) {
+  var builder = new AlertDialog.Builder(context);
   builder.setCancelable(true);
   builder.setTitle(title);
-  builder.setNegativeButton("Cancel",new DialogInterface.OnClickListener(){onClick:function(dialog,id){dialog.dismiss();}});
-  builder.setPositiveButton("Confirm",new DialogInterface.OnClickListener(){onClick:function(dialog,id){dialog.dismiss();setTimeout(onConfirmFunction,0);}});
+  builder.setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
+    onClick: function (dialog, id) {
+      dialog.dismiss();
+    }
+  });
+  builder.setPositiveButton("Confirm", new DialogInterface.OnClickListener() {
+    onClick: function (dialog, id) {
+      dialog.dismiss();
+      setTimeout(onConfirmFunction, 0);
+    }
+  });
   builder.show();
 }
  
-function uninstall(c){
-  if(c){
-    c.setTag("longTapFreeze",false);
-    returnEventHandler(c, freezeEvent);
-    returnEventHandler(c, menuEvent);
-    if(c.getTag("autosync")=="true")returnEventHandler(c, "resumed");
+function setEventHandlerRestorably(ob, name, action, data) {
+  var prop = ob.getProperties()
+    , ed = prop.edit()
+    , evHa = prop.getEventHandler(name);
+  evHa = [evHa.getAction(), evHa.getData()];
+  ed.setEventHandler(name, action, data);
+  ed.commit();
+  ob.setTag("old " + name + " evHa", JSON.stringify(evHa));
+}
+ 
+function restoreEventHandler(ob, name) {
+  if(ob) {
+    var evHa = JSON.parse(ob.getTag("old " + name + " evHa"));
+    if(evHa) {
+      var ed = ob.getProperties().edit();
+      ed.setEventHandler(name, evHa[0], evHa[1]);
+      ed.commit();
+      ob.setTag("name", null);
+    } else {
+      throw new Error("No eventhandler backup for " + name + " on " + ob + "found!")
+    }
+  } else {
+    throw new Error("Cannot restore " + name + "of null!")
+  }
+}
+ 
+function uninstall(c) {
+  if(c && c.getTag("longTapFreeze")) {
+    c.setTag("longTapFreeze", false);
+    restoreEventHandler(c, freezeEvent);
+    restoreEventHandler(c, "i.menu");
+    restoreEventHandler(c, "menu");
+    if(c.getTag("autosync") == "true") restoreEventHandler(c, "resumed");
     var frozenItIds = getFrozenItIds(c)
-    for(var i=0;i<frozenItIds.length;i++){
-      var it = c.getItemById(frozenItIds[i]);
-      if(it){
-        it.getProperties().edit().setInteger("s.iconColorFilter",0xffffffff).commit();
-        it.setTag("frozen",false);
+      , it;
+    frozenItIds.forEach(function(itId, ind) {
+      if(it = c.getItemById(itId)) {
+        unfreezeEffect(it);
       }
-    }
-    c.setTag("frozenItIds",null);
+    })
+    frozenItIds.clear();
+    frozenItIds.queueSave();
   }
 }
-
-function runAsRoot(cmd) {
+ 
+function runAsRoot(cmd, newThread, callback) {
+  function execCmd(cmd){
+    try {
+      var process = Runtime.getRuntime().exec("su")
+        , reader = new DataInputStream(process.getInputStream())
+        , writer = new DataOutputStream(process.getOutputStream());
+ 
+      writer.writeBytes(cmd + '\n');
+      writer.flush();
+      writer.close();
+ 
+      var tmp
+        , output = [];
+      while ((tmp = reader.readLine()) != null) {
+        output.push(tmp);
+      }
+      reader.close();
+      process.waitFor();
+      return output;
+    } catch (err) {
+      alert(err+"At line "+err.lineNumber);
+    }
+  }
+   
+  if(newThread==false){
+    return execCmd(cmd);
+  }else{
+    var handler = getHandler();
+    startNewBackgroundThread(function(){
+      if(callback){
+        var output = execCmd(cmd);
+        handler.post(function(){
+          callback(output);
+        });
+      }else{
+        execCmd(cmd)
+      }
+    })
+  }
+}
+ 
+function getPackageName(it) {
   try {
-    var process = Runtime.getRuntime().exec("su");
-    var reader = new DataInputStream(process.getInputStream());
-    var writer = new DataOutputStream(process.getOutputStream());
-
-    writer.writeBytes(cmd + '\n');
-    writer.flush();
-    writer.close();
-
-    var tmp;
-    var output = [];
-    while ((tmp = reader.readLine()) != null) {
-      output.push(tmp);
-    }
-    reader.close();
-    process.waitFor();
-    return output;
-  } catch (err) {
-    log("{} At line {}", logScript.logLevel.ERROR, err, err.lineNumber);
-  }
-}
-
-function getPackageName(it){
-  try{
     return it.getIntent().getComponent().getPackageName();
-  }catch(e){
-    Toast.makeText(context, "This item doesn't launch an app!", Toast.LENGTH_SHORT).show();
+  } catch(e) {
     return null;
   }
 }
-
-function isFreezable(pkgName){
+ 
+function isFreezable(pkgName) {
   if(!pkgName)
     return false;
-  
+ 
   var onBlackList = false;
-  for(var i=0;i<blackList.length;i++){
-    if(pkgName==blackList[i]){
-      onBlackList=true;
+  for(var i = 0; i < blackList.length; i++) {
+    if(pkgName == blackList[i]) {
+      onBlackList = true;
       break;
     }
   }
-
-  if(whiteList.length==0){
-    onWhiteList = true;
-  }else{
-    onWhiteList = false;
-    for(var i=0;i<whiteList.length;i++){
-      if(pkgName==whiteList[i]){
-        onWhiteList=true;
+ 
+  if(whiteList.length == 0) {
+    var onWhiteList = true;
+  } else {
+    var onWhiteList = false;
+    for(var i = 0; i < whiteList.length; i++) {
+      if(pkgName == whiteList[i]) {
+        onWhiteList = true;
         break;
       }
     }
   }
-
-  /*var pm = context.getPackageManager();
-  try {
-    pm.getPackageInfo( "ccc71.at.free" , PackageManager.GET_ACTIVITIES);
-    var toolboxInstalled = true;
-    var sendToPkg = "ccc71.at.free";
-  } catch (e) {
-    try {
-      pm.getPackageInfo("ccc71.at", PackageManager.GET_ACTIVITIES);
-      toolboxInstalled = true;
-      var sendToPkg = "ccc71.at";
-    } catch (e) {
-      var toolboxInstalled = false;
-    }
-  }*/
-  
-  /*if(!onBlackList && onWhiteList && toolboxInstalled){
-    return {sendToPkg: sendToPkg, pkgName: pkgName};
-  }*/
-  
+ 
   return !onBlackList && onWhiteList;
 }
-
-function freeze(it, pkgName, frozenItIds){
-  runAsRoot("pm disable "+pkgName);
-  freezeEffect(it, frozenItIds);
+ 
+function freeze(it, pkgName) {
+  runAsRoot("pm disable " + pkgName, true, function() {
+    freezeEffect(it);
+    var frozenItIds = getFrozenItIds(it.getParent());
+    frozenItIds.push(it.getId());
+    frozenItIds.queueSave();
+  });
 }
-
-function unfreeze(it, pkgName, frozenItIds){
-  runAsRoot("pm enable "+pkgName);
-  unfreezeEffect(it, frozenItIds);
+ 
+function unfreeze(it, pkgName) {
+  runAsRoot("pm enable " + pkgName, true, function() {
+    unfreezeEffect(it);
+    var frozenItIds = getFrozenItIds(it.getParent());
+    frozenItIds.remove(it.getId());
+    frozenItIds.queueSave();
+  });
 }
-
-function freezeEffect(it, frozenItIds){
-  it.getProperties().edit().setInteger("s.iconColorFilter",0x00ffffff).commit();
-  it.setTag("frozen",true);
-  frozenItIds.push(it.getId());
+ 
+function freezeEffect(it) {
+  it.getProperties().edit().setInteger("s.iconColorFilter", 0x00ffffff).commit();
+  it.setTag("frozen", true);
 }
-
-function unfreezeEffect(it, frozenItIds){
-  it.getProperties().edit().setInteger("s.iconColorFilter",0xffffffff).commit();
-  it.setTag("frozen",false);
-  frozenItIds.splice(frozenItIds.indexOf(it.getId()),1);
+ 
+function unfreezeEffect(it) {
+  it.getProperties().edit().setInteger("s.iconColorFilter", 0xffffffff).commit();
+  it.setTag("frozen", false);
 }
-
-function getFrozenItIds(c){
-  return JSON.parse(c.getTag("frozenItIds")) || []
+ 
+function getFrozenItIds(c) {
+  var cId = c.getId();
+  if(!frozenItIdss[cId])
+    frozenItIdss[cId] = new TagArray(c, "frozenItIds");
+  return frozenItIdss[cId];
 }
-
-function getFrozenApps(){
-  var frozenApps = runAsRoot("pm list packages -d");
-  for(var i=0;i<frozenApps.length;i++){
-    frozenApps[i] = frozenApps[i].split(":")[1];
+ 
+function getFrozenApps() {
+  if(!frozenApps) {
+    frozenApps = runAsRoot("pm list packages -d", false);
+    for(var i = 0; i < frozenApps.length; i++) {
+      frozenApps[i] = frozenApps[i].split(":")[1];
+    }
   }
   return frozenApps;
 }
-
-function syncContainer(c){
-  if(!frozenItIds) var frozenItIds = getFrozenItIds(c);
-  if(!frozenApps) var frozenApps = getFrozenApps();
-  var items = c.getItems();
-  for(var i = 0; i<items.length; i++){
-    syncItem(items.getAt(i), frozenApps, frozenItIds);
-  }
-  c.setTag("frozenItIds", JSON.stringify(frozenItIds));
+ 
+function syncContainer(c) {
+  startNewBackgroundThread(function() {
+    var items = c.getItems();
+    for(var i = 0; i < items.length; i++) {
+      syncItem(items.getAt(i));
+    }
+  });
 }
-
-function syncItem(it, frozenApps, frozenItIds){
-  if(!frozenItIds) var frozenItIds = getFrozenItIds(it.getParent());
-  if(!frozenApps) var frozenApps = getFrozenApps();
-  if(it.getType()=="Shortcut"){
+ 
+function syncItem(it) {
+  var c = it.getParent()
+    , frozenItIds = getFrozenItIds(c)
+    , frozenApps = getFrozenApps();
+  if(it.getType() == "Shortcut") {
     var pkgName = getPackageName(it);
-    if(pkgName && isFreezable(pkgName)){
-      var matched = false;
-      var isFrozen = it.getTag("frozen")=="true";
-      for(var j = 0; j<frozenApps.length; j++){
-        //if(it.getIntent().getComponent().getPackageName().split("/") == frozenApps[j]){
-        if(pkgName==frozenApps[j]){
+    if(pkgName && isFreezable(pkgName)) {
+      var matched = false
+        , isFrozen = it.getTag("frozen") == "true";
+      for(var j = 0; j < frozenApps.length; j++) {
+        if(pkgName == frozenApps[j]) {
           matched = true;
-          if(isFreezable(it) && !isFrozen){
-            freezeEffect(it, frozenItIds);
-          }
+          break;
         }
       }
-      if(!matched && isFrozen){
-        unfreezeEffect(it, frozenItIds);
+      if(!isFrozen && matched) {
+        handleGUIEdit(function() {
+          freezeEffect(it);
+        })
+        frozenItIds.push(it.getId());
+        frozenItIds.queueSave();
+      }
+      if(!matched && isFrozen) {
+        handleGUIEdit(function() {
+          unfreezeEffect(it);
+        })
+        frozenItIds.remove(it.getId());
+        frozenItIds.queueSave();
       }
     }
   }
 }
-
-if(data){
-  if(data.length == 4){
-    var c;
-    if(it){
-      syncContainer(it.getParent());
-    }else if(c = e.getContainer()){
-      syncContainer(c);
-    }else{
-      throw new Error("Could not find a way to determine the container to sync. Run the script from an item in the container or from the container itself or add the container id directly afrer 'sync'.")
-    }
-  }else if(data.substring(0,4) == "sync"){
-    var cId = data.substring(4, data.length)
-    var c = LL.getContainerById(cId);
-    if(!c)throw new Error("Could not find container with id:"+ cId)
-    syncContainer(c);
+ 
+function handleGUIEdit(func) {
+  if(Looper.getMainLooper().getThread() == Thread.currentThread()) {
+    func();
+  } else {
+    GUIHandler.post(func);
   }
-}else{
-  if(!it){
-    var c = e.getContainer();
-    var cIds = JSON.parse(script.getTag("cIds")) || [];
-    if(c){
-      cId = c.getId();
-      if(c.getTag("longTapFreeze")=="true"){
-        customConfirmDialog("Are you sure you want to uninstall?", function(){
-          uninstall(c);
-          cIds.splice(cIds.indexOf(c.getId()),1);
-          script.setTag("cIds", JSON.stringify(cIds));
-          Toast.makeText(context, "Uninstalled!", Toast.LENGTH_SHORT).show();
-        });
-      }else{
-        customConfirmDialog("Are you sure you want to install?", function(){
-          cIds.push(c.getId());
-          c.setTag("longTapFreeze",true);
-          loanEventHandler(c, freezeEvent, EventHandler.RUN_SCRIPT, script.getId());
-          loanEventHandler(c, menuEvent, EventHandler.RUN_SCRIPT, script.getId());
-          customConfirmDialog("Do you want to enable autosync?", function(){
-            loanEventHandler(c, "resumed", EventHandler.RUN_SCRIPT, script.getId()+"sync");
-            c.setTag("autosync", true);
-          });
-          script.setTag("cIds", JSON.stringify(cIds));
-          Toast.makeText(context, "Installed!", Toast.LENGTH_SHORT).show();
-        });
+}
+ 
+function startNewBackgroundThread(func) {
+  var thread = new Thread(function() {
+    func();
+    if(threads[Thread.currentThread().getId()].prepared == true) {
+      Looper.myLooper().getQueue().addIdleHandler(function() {
+        Looper.myLooper().quitSafely();
+      })
+      Looper.loop();
+    }
+  })
+  thread.setUncaughtExceptionHandler(function(th, ex) {
+    handleGUIEdit(function() {
+      alert(ex.getMessage());
+    })
+  })
+  threads[thread.getId()] = {};
+  thread.start();
+}
+ 
+function getHandler() {
+  if(Looper.getMainLooper().getThread() == Thread.currentThread()) {
+    return GUIHandler;
+  } else {
+    var threadId = Thread.currentThread().getId();
+    if(threads[threadId].prepared != true) {
+      Looper.prepare();
+      threads[threadId].prepared = true;
+    }
+    return new Handler();
+  }
+}
+ 
+function TagArray(ob, name, manualSave) {
+  this.push.apply(this, JSON.parse(ob.getTag(name)) || []);
+  var me = this;
+  this.save = function() {
+    ob.setTag(name, JSON.stringify(Array.prototype.slice.call(me)));
+  }
+  if(manualSave != true) this.queueSave();
+}
+ 
+TagArray.prototype = new Array();
+TagArray.prototype.constructor = TagArray;
+TagArray.prototype.saveQueued = false;
+ 
+TagArray.prototype.queueSave = function() {
+  if(!this.queueSaved) {
+    getHandler().post(this.save)
+    this.queueSaved = true;
+  }
+}
+ 
+TagArray.prototype.remove = function(el) {
+  var ind = this.indexOf(el);
+  if(ind != -1)
+    this.splice(ind, 1);
+  else
+    return false;
+}
+ 
+TagArray.prototype.clear = function() {
+  this.length = 0;
+}
+ 
+if(typeof getEvent != "undefined"){
+  var e = getEvent()
+  , it = e.getItem()
+  , data = e.getData();
+  if(data) {
+    if(data.length == 4) {
+      var c;
+      if(it) {
+        syncContainer(it.getParent());
+      } else if(c = e.getContainer()) {
+        syncContainer(c);
+      } else {
+        throw new Error("Could not find a way to determine the container to sync. Run the script from an item in the container or from the container itself or add the container id directly afrer 'sync'.")
       }
-    }else{
-      customConfirmDialog("Are you sure you want to uninstall from every container?", function(){
-        for(var i=0;i<cIds.length;i++){
-          uninstall(LL.getContainerById(cIds[i]));
-        }
-        script.setTag("cIds",null);
-        Toast.makeText(context, "Uninstalled everywhere!", Toast.LENGTH_SHORT).show();
-      });
+    } else if(data.substring(0, 4) == "sync") {
+      var cId = data.substring(4, data.length)
+        , c = screen.getContainerById(cId);
+      if(!c) throw new Error("Could not find container with id:" + cId)
+      syncContainer(c);
     }
   } else {
-    var src = e.getSource();
-    if(src==freezeSource){
-      var c = it.getParent();
-      var frozenItIds = getFrozenItIds(c)
-      //var freezeInfo;
-      var pkgName = getPackageName(it);
-      if(isFreezable(pkgName)){
-        //LL.runAction(EventHandler.LAUNCH_SHORTCUT, "#Intent;action=ccc71.at.freeze;launchFlags=0x34000000;component="+freezeInfo.sendToPkg+"/ccc71.at.activities.tweaks.at_tweaker_activity;S.ccc71.at.packagename="+freezeInfo.pkgName+";end");
-        if(it.getTag("frozen")=="true"){
-          unfreeze(it, pkgName, frozenItIds);
-        }else{
-          freeze(it, pkgName, frozenItIds);
+    if(!it) {
+      var /*src = e.getSource();
+        , */cIds = new TagArray(script, "cIds", true);
+      //if(src=="MENU_CONTAINER") {
+        var c = e.getContainer()
+        cId = c.getId();
+        if(c.getTag("longTapFreeze") == "true") {
+          if(confirm("Are you sure you want to uninstall?")) {
+            uninstall(c);
+            cIds.remove(c.getId());
+            cIds.save();
+            Toast.makeText(context, "Uninstalled!", Toast.LENGTH_SHORT).show();
+          }
+        } else {
+          if(confirm("Are you sure you want to install?")) {
+            cIds.push(c.getId());
+            c.setTag("longTapFreeze", true);
+            setEventHandlerRestorably(c, freezeEvent, EventHandler.RUN_SCRIPT, script.getId());
+            setEventHandlerRestorably(c, "i.menu", EventHandler.RUN_SCRIPT, script.getId());
+            setEventHandlerRestorably(c, "menu", EventHandler.RUN_SCRIPT, script.getId());
+            customConfirmDialog("Do you want to enable autosync?", function() {
+              setEventHandlerRestorably(c, "resumed", EventHandler.RUN_SCRIPT, script.getId() + "/sync");
+              syncContainer(c);
+              c.setTag("autosync", true);
+            });
+            cIds.save();
+            Toast.makeText(context, "Installed!", Toast.LENGTH_SHORT).show();
+          }
         }
-      c.setTag("frozenItIds", JSON.stringify(frozenItIds));
-      }else{
-        Toast.makeText(context, "Cannot freeze/unfreeze! (Probably because of black- or whitelist", Toast.LENGTH_SHORT).show();
-      }
-    }else if(src == menuSource){
-      LL.bindClass("android.R");
-      LL.bindClass("java.util.ArrayList");
-      LL.bindClass("android.view.ViewTreeObserver");
-      LL.bindClass("android.widget.Button");
-      LL.bindClass("android.view.View");
-      LL.bindClass("android.os.Build");
-
-      var pkg = context.getPackageName();
-      var rsrc = context.getResources();
-      var id = rsrc.getIdentifier("bubble_content", "id",  pkg);
-      var menu = context.getWindow().getDecorView().findViewById(id);
-      var menuRoot = menu.getParent();
-      var version = Build.VERSION.SDK_INT;
-      
-      function add(text,onClickFunction,first,list){
-        var t=new Button(LL.getContext());
-        if(version >= 16) t.setBackground(first.getBackground().mutate().getConstantState().newDrawable());
-        else t.setBackgroundDrawable(first.getBackground().mutate().newDrawable());
-        t.setTypeface(first.getTypeface());
-        if(version >= 14) t.setAllCaps(false);
-        t.setTextSize(0,first.getTextSize());
-        if(version >= 21) t.setFontFeatureSettings(first.getFontFeatureSettings());
-        t.setGravity(first.getGravity());
-        t.setText(text);
-        t.setOnClickListener(new View.OnClickListener(){
-        onClick:onClickFunction
-        });
-        list.addView(t);
-      }
-
-      var obs=menuRoot.getViewTreeObserver();
-      var l=new ViewTreeObserver.OnGlobalLayoutListener(){
-        onGlobalLayout:function(){
-          var list=menu;
-          var first=list.getChildAt(0);
-          add("Sync", function(){
-            syncItem(it);
-          },first, list)
-          obs.removeOnGlobalLayoutListener(l);
-          return true;
+      /*} else {
+        if(confirm("Are you sure you want to uninstall from every container?")) {
+          for(var i = 0; i < cIds.length; i++) {
+            uninstall(screen.getContainerById(cIds[i]));
+          }
+          cIds.clear();
+          cIds.save();
+          Toast.makeText(context, "Uninstalled everywhere!", Toast.LENGTH_SHORT).show();
         }
-      };﻿
-
-      obs.addOnGlobalLayoutListener(l);
-      LL.runAction(EventHandler.LAUNCHER_MENU);
+      }*/
+    } else {
+      // long tap
+      var src = e.getSource();
+      if(src == freezeSource) {
+        var c = it.getParent()
+          , pkgName = getPackageName(it)
+          , freezeAble = isFreezable(pkgName);
+        if(pkgName && freezeAble) {
+          if(it.getTag("frozen") == "true") {
+            unfreeze(it, pkgName);
+          } else {
+            freeze(it, pkgName);
+          }
+        } else if(!pkgName){
+          Toast.makeText(context, it+" doesn't launch an app!", Toast.LENGTH_SHORT).show();
+        } else if(!freezeAble) {
+          Toast.makeText(context, "Cannot freeze/unfreeze! (Probably because of black- or whitelist", Toast.LENGTH_SHORT).show();
+        }
+      }
     }
+  }
+}else if(menu){
+  var mode = menu.getMode()
+  if(mode == Menu.MODE_ITEM_SUBMENU_ACTION || mode == Menu.MODE_ITEM_NO_EM){
+    menu.addMainItem("Sync frozen-state", function(){
+      syncItem(item);
+      menu.close();
+    });
+  }else if(mode == Menu.MODE_CONTAINER_SUBMENU_ITEMS){
+    menu.addMainItem("Sync frozen-state", function(){
+      syncContainer(container)
+      menu.close();
+    });
   }
 }
