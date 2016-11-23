@@ -5,9 +5,7 @@ var blackList = ["net.pierrox.lightning_launcher_extreme"]
   // you may only have to set 1 in the future.
   , freezeSource = "I_LONG_CLICK"
   , freezeEvent = "i.longTap";
- 
-bindClass("android.app.AlertDialog");
-bindClass("android.content.DialogInterface");
+
 bindClass("android.widget.Toast");
 bindClass("android.content.pm.PackageManager");
 bindClass('java.lang.Runtime');
@@ -18,7 +16,7 @@ bindClass("java.lang.Runnable");
 bindClass("java.lang.Thread");
 bindClass("android.os.Handler");
 bindClass("android.os.Looper");
- 
+
 var script = getCurrentScript()
   , screen = getActiveScreen()
   , context = screen.getContext()
@@ -26,25 +24,7 @@ var script = getCurrentScript()
   , threads = []
   , GUIHandler = new Handler()
   , frozenApps;
-   
-function customConfirmDialog(title, onConfirmFunction) {
-  var builder = new AlertDialog.Builder(context);
-  builder.setCancelable(true);
-  builder.setTitle(title);
-  builder.setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
-    onClick: function (dialog, id) {
-      dialog.dismiss();
-    }
-  });
-  builder.setPositiveButton("Confirm", new DialogInterface.OnClickListener() {
-    onClick: function (dialog, id) {
-      dialog.dismiss();
-      setTimeout(onConfirmFunction, 0);
-    }
-  });
-  builder.show();
-}
- 
+
 function setEventHandlerRestorably(ob, name, action, data) {
   var prop = ob.getProperties()
     , ed = prop.edit()
@@ -54,7 +34,7 @@ function setEventHandlerRestorably(ob, name, action, data) {
   ed.commit();
   ob.setTag("old " + name + " evHa", JSON.stringify(evHa));
 }
- 
+
 function restoreEventHandler(ob, name) {
   if(ob) {
     var evHa = JSON.parse(ob.getTag("old " + name + " evHa"));
@@ -70,7 +50,7 @@ function restoreEventHandler(ob, name) {
     throw new Error("Cannot restore " + name + "of null!")
   }
 }
- 
+
 function uninstall(c) {
   if(c && c.getTag("longTapFreeze")) {
     c.setTag("longTapFreeze", false);
@@ -80,7 +60,7 @@ function uninstall(c) {
     if(c.getTag("autosync") == "true") restoreEventHandler(c, "resumed");
     var frozenItIds = getFrozenItIds(c)
       , it;
-    frozenItIds.forEach(function(itId, ind) {
+    frozenItIds.forEach(function (itId, ind) {
       if(it = c.getItemById(itId)) {
         unfreezeEffect(it);
       }
@@ -89,48 +69,50 @@ function uninstall(c) {
     frozenItIds.queueSave();
   }
 }
- 
-function runAsRoot(cmd, newThread, callback) {
-  function execCmd(cmd){
+
+function runCmd(cmd, asRoot, newThread, callback) {
+  function execCmd(cmd) {
     try {
-      var process = Runtime.getRuntime().exec("su")
+      var process = Runtime.getRuntime().exec(asRoot ? "su" : cmd)
         , reader = new DataInputStream(process.getInputStream())
         , writer = new DataOutputStream(process.getOutputStream());
- 
-      writer.writeBytes(cmd + '\n');
-      writer.flush();
-      writer.close();
- 
+
+      if(asRoot) {
+        writer.writeBytes(cmd + '\n');
+        writer.flush();
+        writer.close();
+      }
+
       var tmp
         , output = [];
-      while ((tmp = reader.readLine()) != null) {
+      while((tmp = reader.readLine()) != null) {
         output.push(tmp);
       }
       reader.close();
       process.waitFor();
       return output;
-    } catch (err) {
-      alert(err+"At line "+err.lineNumber);
+    } catch(err) {
+      alert(err + "At line " + err.lineNumber);
     }
   }
-   
-  if(newThread==false){
+
+  if(newThread == false) {
     return execCmd(cmd);
-  }else{
+  } else {
     var handler = getHandler();
-    startNewBackgroundThread(function(){
-      if(callback){
+    startNewBackgroundThread(function () {
+      if(callback) {
         var output = execCmd(cmd);
-        handler.post(function(){
+        handler.post(function () {
           callback(output);
         });
-      }else{
+      } else {
         execCmd(cmd)
       }
     })
   }
 }
- 
+
 function getPackageName(it) {
   try {
     return it.getIntent().getComponent().getPackageName();
@@ -138,11 +120,11 @@ function getPackageName(it) {
     return null;
   }
 }
- 
+
 function isFreezable(pkgName) {
   if(!pkgName)
     return false;
- 
+
   var onBlackList = false;
   for(var i = 0; i < blackList.length; i++) {
     if(pkgName == blackList[i]) {
@@ -150,7 +132,7 @@ function isFreezable(pkgName) {
       break;
     }
   }
- 
+
   if(whiteList.length == 0) {
     var onWhiteList = true;
   } else {
@@ -162,64 +144,64 @@ function isFreezable(pkgName) {
       }
     }
   }
- 
+
   return !onBlackList && onWhiteList;
 }
- 
+
 function freeze(it, pkgName) {
-  runAsRoot("pm disable " + pkgName, true, function() {
+  runCmd("pm disable " + pkgName, true, true, function () {
     freezeEffect(it);
     var frozenItIds = getFrozenItIds(it.getParent());
     frozenItIds.push(it.getId());
     frozenItIds.queueSave();
   });
 }
- 
+
 function unfreeze(it, pkgName) {
-  runAsRoot("pm enable " + pkgName, true, function() {
+  runCmd("pm enable " + pkgName, true, true, function () {
     unfreezeEffect(it);
     var frozenItIds = getFrozenItIds(it.getParent());
     frozenItIds.remove(it.getId());
     frozenItIds.queueSave();
   });
 }
- 
+
 function freezeEffect(it) {
   it.getProperties().edit().setInteger("s.iconColorFilter", 0x00ffffff).commit();
   it.setTag("frozen", true);
 }
- 
+
 function unfreezeEffect(it) {
   it.getProperties().edit().setInteger("s.iconColorFilter", 0xffffffff).commit();
   it.setTag("frozen", false);
 }
- 
+
 function getFrozenItIds(c) {
   var cId = c.getId();
   if(!frozenItIdss[cId])
     frozenItIdss[cId] = new TagArray(c, "frozenItIds");
   return frozenItIdss[cId];
 }
- 
+
 function getFrozenApps() {
   if(!frozenApps) {
-    frozenApps = runAsRoot("pm list packages -d", false);
+    frozenApps = runCmd("pm list packages -d", false, false);
     for(var i = 0; i < frozenApps.length; i++) {
       frozenApps[i] = frozenApps[i].split(":")[1];
     }
   }
   return frozenApps;
 }
- 
+
 function syncContainer(c) {
-  startNewBackgroundThread(function() {
+  startNewBackgroundThread(function () {
     var items = c.getItems();
     for(var i = 0; i < items.length; i++) {
       syncItem(items.getAt(i));
     }
   });
 }
- 
+
 function syncItem(it) {
   var c = it.getParent()
     , frozenItIds = getFrozenItIds(c)
@@ -236,14 +218,14 @@ function syncItem(it) {
         }
       }
       if(!isFrozen && matched) {
-        handleGUIEdit(function() {
+        handleGUIEdit(function () {
           freezeEffect(it);
         })
         frozenItIds.push(it.getId());
         frozenItIds.queueSave();
       }
       if(!matched && isFrozen) {
-        handleGUIEdit(function() {
+        handleGUIEdit(function () {
           unfreezeEffect(it);
         })
         frozenItIds.remove(it.getId());
@@ -252,7 +234,7 @@ function syncItem(it) {
     }
   }
 }
- 
+
 function handleGUIEdit(func) {
   if(Looper.getMainLooper().getThread() == Thread.currentThread()) {
     func();
@@ -260,26 +242,26 @@ function handleGUIEdit(func) {
     GUIHandler.post(func);
   }
 }
- 
+
 function startNewBackgroundThread(func) {
-  var thread = new Thread(function() {
+  var thread = new Thread(function () {
     func();
     if(threads[Thread.currentThread().getId()].prepared == true) {
-      Looper.myLooper().getQueue().addIdleHandler(function() {
+      Looper.myLooper().getQueue().addIdleHandler(function () {
         Looper.myLooper().quitSafely();
       })
       Looper.loop();
     }
   })
-  thread.setUncaughtExceptionHandler(function(th, ex) {
-    handleGUIEdit(function() {
+  thread.setUncaughtExceptionHandler(function (th, ex) {
+    handleGUIEdit(function () {
       alert(ex.getMessage());
     })
   })
   threads[thread.getId()] = {};
   thread.start();
 }
- 
+
 function getHandler() {
   if(Looper.getMainLooper().getThread() == Thread.currentThread()) {
     return GUIHandler;
@@ -292,43 +274,43 @@ function getHandler() {
     return new Handler();
   }
 }
- 
+
 function TagArray(ob, name, manualSave) {
   this.push.apply(this, JSON.parse(ob.getTag(name)) || []);
   var me = this;
-  this.save = function() {
+  this.save = function () {
     ob.setTag(name, JSON.stringify(Array.prototype.slice.call(me)));
   }
   if(manualSave != true) this.queueSave();
 }
- 
+
 TagArray.prototype = new Array();
 TagArray.prototype.constructor = TagArray;
 TagArray.prototype.saveQueued = false;
- 
-TagArray.prototype.queueSave = function() {
+
+TagArray.prototype.queueSave = function () {
   if(!this.queueSaved) {
     getHandler().post(this.save)
     this.queueSaved = true;
   }
 }
- 
-TagArray.prototype.remove = function(el) {
+
+TagArray.prototype.remove = function (el) {
   var ind = this.indexOf(el);
   if(ind != -1)
     this.splice(ind, 1);
   else
     return false;
 }
- 
-TagArray.prototype.clear = function() {
+
+TagArray.prototype.clear = function () {
   this.length = 0;
 }
- 
-if(typeof getEvent != "undefined"){
+
+if(typeof getEvent != "undefined") {
   var e = getEvent()
-  , it = e.getItem()
-  , data = e.getData();
+    , it = e.getItem()
+    , data = e.getData();
   if(data) {
     if(data.length == 4) {
       var c;
@@ -347,46 +329,34 @@ if(typeof getEvent != "undefined"){
     }
   } else {
     if(!it) {
-      var /*src = e.getSource();
-        , */cIds = new TagArray(script, "cIds", true);
-      //if(src=="MENU_CONTAINER") {
-        var c = e.getContainer()
-        cId = c.getId();
-        if(c.getTag("longTapFreeze") == "true") {
-          if(confirm("Are you sure you want to uninstall?")) {
-            uninstall(c);
-            cIds.remove(c.getId());
-            cIds.save();
-            Toast.makeText(context, "Uninstalled!", Toast.LENGTH_SHORT).show();
-          }
-        } else {
-          if(confirm("Are you sure you want to install?")) {
-            cIds.push(c.getId());
-            c.setTag("longTapFreeze", true);
-            setEventHandlerRestorably(c, freezeEvent, EventHandler.RUN_SCRIPT, script.getId());
-            setEventHandlerRestorably(c, "i.menu", EventHandler.RUN_SCRIPT, script.getId());
-            setEventHandlerRestorably(c, "menu", EventHandler.RUN_SCRIPT, script.getId());
-            customConfirmDialog("Do you want to enable autosync?", function() {
-              setEventHandlerRestorably(c, "resumed", EventHandler.RUN_SCRIPT, script.getId() + "/sync");
-              syncContainer(c);
-              c.setTag("autosync", true);
-            });
-            cIds.save();
-            Toast.makeText(context, "Installed!", Toast.LENGTH_SHORT).show();
-          }
-        }
-      /*} else {
-        if(confirm("Are you sure you want to uninstall from every container?")) {
-          for(var i = 0; i < cIds.length; i++) {
-            uninstall(screen.getContainerById(cIds[i]));
-          }
-          cIds.clear();
+      var cIds = new TagArray(script, "cIds", true);
+      var c = e.getContainer()
+      cId = c.getId();
+      if(c.getTag("longTapFreeze") == "true") {
+        if(confirm("Are you sure you want to uninstall?")) {
+          uninstall(c);
+          cIds.remove(c.getId());
           cIds.save();
-          Toast.makeText(context, "Uninstalled everywhere!", Toast.LENGTH_SHORT).show();
+          Toast.makeText(context, "Uninstalled!", Toast.LENGTH_SHORT).show();
         }
-      }*/
+      } else {
+        if(confirm("Are you sure you want to install?")) {
+          cIds.push(c.getId());
+          c.setTag("longTapFreeze", true);
+          setEventHandlerRestorably(c, freezeEvent, EventHandler.RUN_SCRIPT, script.getId());
+          setEventHandlerRestorably(c, "i.menu", EventHandler.RUN_SCRIPT, script.getId());
+          setEventHandlerRestorably(c, "menu", EventHandler.RUN_SCRIPT, script.getId());
+          if(confirm("Do you want to enable autosync?")) {
+            setEventHandlerRestorably(c, "resumed", EventHandler.RUN_SCRIPT, script.getId() + "/sync");
+            syncContainer(c);
+            c.setTag("autosync", true);
+          }
+          cIds.save();
+          Toast.makeText(context, "Installed!", Toast.LENGTH_SHORT).show();
+        }
+      }
     } else {
-      // long tap
+      //long tap
       var src = e.getSource();
       if(src == freezeSource) {
         var c = it.getParent()
@@ -398,25 +368,36 @@ if(typeof getEvent != "undefined"){
           } else {
             freeze(it, pkgName);
           }
-        } else if(!pkgName){
-          Toast.makeText(context, it+" doesn't launch an app!", Toast.LENGTH_SHORT).show();
+        } else if(!pkgName) {
+          Toast.makeText(context, it + " doesn't launch an app!", Toast.LENGTH_SHORT).show();
         } else if(!freezeAble) {
           Toast.makeText(context, "Cannot freeze/unfreeze! (Probably because of black- or whitelist", Toast.LENGTH_SHORT).show();
         }
       }
     }
   }
-}else if(menu){
+} else if(menu) {
   var mode = menu.getMode()
-  if(mode == Menu.MODE_ITEM_SUBMENU_ACTION || mode == Menu.MODE_ITEM_NO_EM){
-    menu.addMainItem("Sync frozen-state", function(){
+  if(mode == Menu.MODE_ITEM_SUBMENU_ACTION || mode == Menu.MODE_ITEM_NO_EM) {
+    menu.addMainItem("Sync frozen-state", function () {
       syncItem(item);
       menu.close();
     });
-  }else if(mode == Menu.MODE_CONTAINER_SUBMENU_ITEMS){
-    menu.addMainItem("Sync frozen-state", function(){
+  } else if(mode == Menu.MODE_CONTAINER_SUBMENU_ITEMS) {
+    menu.addMainItem("Sync frozen-state", function () {
       syncContainer(container)
       menu.close();
     });
   }
 }
+
+/* uninstall everywhere
+if(confirm("Are you sure you want to uninstall from every container?")) {
+          for(var i = 0; i < cIds.length; i++) {
+            uninstall(screen.getContainerById(cIds[i]));
+          }
+          cIds.clear();
+          cIds.save();
+          Toast.makeText(context, "Uninstalled everywhere!", Toast.LENGTH_SHORT).show();
+        }
+*/
