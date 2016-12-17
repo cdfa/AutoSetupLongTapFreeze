@@ -73,20 +73,55 @@ function uninstall(c){
   }
 }
 
+/**
+ * Checks if an object is an array.
+ * @param object
+ * @returns {boolean}
+ */
 function isArray(object){
   return Object.prototype.toString.call(object) == '[object Array]';
 }
 
-/*
- ATTENTION:
- if multiple commands are executed as root, the output will be an array of the returned lines
- if multiple commands are not executed as root, the output will be an array of returned outputs (which are themselves arrays of lines)
+/**
+ * This callback will be called when the executing of the command(s) is finished
+ *
+ * @callback finishedCallback
+ * @param {string[]} An array of the lines the command(s) returned
+ */
+/**
+ * This callback will be called when a command is executed.
+ *
+ * @callback executedCallback
+ */
+/**
+ * Runs a command in the terminal
+ * @param cmds {string|string[]} - The command or array of commmands to be executed.
+ * @param [asRoot=false] {boolean} - If the command(s) should be executed as root or not.
+ * @param [newThread=true] {boolean} - If the executing of commands should happen in a new thread or not. (useful for root commands)
+ * @param [callback] {finishedCallback} - The callback that handles the output.
+ * @param [onExecuted] {executedCallback} - A callback that will be called when a command is executed. useful for multiple commands that take some time)
+ * @returns {string[]||string[][]} - (only if asRoot == false && newThread == false) Returns an array of the lines written in the terminal or an array of arrays if multiple commands were executed.
  */
 function runCmd(cmds, asRoot, newThread, callback, onExecuted){
   var handler = getHandler()
     , output, process, reader, writer;
 
+  // set optional arguments
+  if(asRoot == null)
+    asRoot = false;
+  if(newThread == null)
+    newThread = true;
+
+  /**
+   * Helper function for executing the command(s). Gets its parameters from the parent function.
+   * @returns {string[]||string[][]} - (only if asRoot == false && newThread == false) Returns an array of the lines written in the terminal or an array of arrays if multiple commands were executed.
+   */
   function execCmd(){
+    /**
+     * Checks if the command is a string and if not alerts the user.
+     * @param cmd {string}
+     * @returns {boolean}
+     */
     function checkCmd(cmd){
       if(typeof(cmd) === "string"){
         return true;
@@ -97,6 +132,12 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
       return false;
     }
 
+    /**
+     * Actually executes command.
+     * @param cmd {string}
+     * @param writer {DataOutputStream} - The writer to write the command to.
+     * @returns {boolean} If the command was actually written or not.
+     */
     function exec(cmd, writer){
       if(checkCmd(cmd)){
         writer.writeBytes(cmd + "\n");
@@ -106,6 +147,11 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
       return false;
     }
 
+    /**
+     * Read the output from the reader.
+     * @param reader {BufferedReader}
+     * @returns {Array} An array of lines that were outputted by the
+     */
     function readOutput(reader){
       var tmp, output = [];
       while((tmp = reader.readLine()) != null)
@@ -114,6 +160,11 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
       return output.length == 1 ? output[0] : output;
     }
 
+    /**
+     * Executes the callback and if the callback is not a function alerts the user.
+     * @param callback
+     * @param output {Array} - The argument that is passed to the callback
+     */
     function handleCallback(callback, output){
       if(typeof callback == "function"){
         handler.post(function(){
@@ -197,12 +248,12 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
   if(asRoot && isArray(callback))
     throw new Error("Multiple callbacks are not possible in su mode. Use onExecuteds instead.");
 
-  if(newThread === false){
-    return execCmd();
-  }else{
+  if(newThread){
     startNewBackgroundThread(function(){
       execCmd();
-    })
+    });
+  }else{
+    return execCmd();
   }
 }
 
@@ -390,6 +441,10 @@ function syncItem(it){
   }
 }
 
+/**
+ * If this function is executed in a thread that is the main GUI thread, execute func, or else execute func in the main GUI thread. (Android doesn't like it when you change the GUI outside of the main GUI thread)
+ * @param func {function}
+ */
 function handleGUIEdit(func){
   if(Looper.getMainLooper().getThread() == Thread.currentThread()){
     func();
@@ -398,9 +453,14 @@ function handleGUIEdit(func){
   }
 }
 
+/**
+ * Starts a new background thread with func.
+ * @param func {function} - The function the thread executes.
+ */
 function startNewBackgroundThread(func){
   var thread = new Thread(function(){
     func();
+    // if a looper was initialized in func, make sure the thread can die by stopping the thread when the Looper idles.
     if(threads[Thread.currentThread().getId()].prepared == true){
       Looper.myLooper().getQueue().addIdleHandler(function(){
         Looper.myLooper().quitSafely();
@@ -411,12 +471,16 @@ function startNewBackgroundThread(func){
   thread.setUncaughtExceptionHandler(function(th, ex){
     handleGUIEdit(function(){
       alert(ex.getMessage());
-    });
+    })
   });
   threads[thread.getId()] = {};
   thread.start();
 }
 
+/**
+ * Gets a handler for the current thread and initializes a looper if necessary.
+ * @returns {Handler}
+ */
 function getHandler(){
   if(Looper.getMainLooper().getThread() == Thread.currentThread()){
     return GUIHandler;
