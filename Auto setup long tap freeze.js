@@ -9,7 +9,8 @@ var blackList = ["net.pierrox.lightning_launcher_extreme"]
 bindClass("android.widget.Toast");
 bindClass("android.content.pm.PackageManager");
 bindClass('java.lang.Runtime');
-bindClass("java.io.DataInputStream")
+bindClass('java.io.BufferedReader');
+bindClass('java.io.InputStreamReader');
 bindClass('java.io.DataOutputStream');
 bindClass('java.lang.StringBuffer');
 bindClass("java.lang.Runnable");
@@ -20,12 +21,11 @@ bindClass("android.os.Looper");
 var script = getCurrentScript()
   , screen = getActiveScreen()
   , context = screen.getContext()
-  , frozenItIdss = []
   , threads = []
   , GUIHandler = new Handler()
   , frozenApps;
 
-function setEventHandlerRestorably(ob, name, action, data) {
+function setEventHandlerRestorably(ob, name, action, data){
   var prop = ob.getProperties()
     , ed = prop.edit()
     , evHa = prop.getEventHandler(name);
@@ -35,110 +35,203 @@ function setEventHandlerRestorably(ob, name, action, data) {
   ob.setTag("old " + name + " evHa", JSON.stringify(evHa));
 }
 
-function restoreEventHandler(ob, name) {
-  if(ob) {
+function restoreEventHandler(ob, name){
+  if(ob){
     var evHa = JSON.parse(ob.getTag("old " + name + " evHa"));
-    if(evHa) {
+    if(evHa){
       var ed = ob.getProperties().edit();
       ed.setEventHandler(name, evHa[0], evHa[1]);
       ed.commit();
       ob.setTag("name", null);
-    } else {
+    }else{
       throw new Error("No eventhandler backup for " + name + " on " + ob + "found!")
     }
-  } else {
+  }else{
     throw new Error("Cannot restore " + name + "of null!")
   }
 }
 
-function uninstall(c) {
-  if(c && c.getTag("longTapFreeze")) {
+function uninstall(c){
+  if(c && c.getTag("longTapFreeze")){
     c.setTag("longTapFreeze", false);
     restoreEventHandler(c, freezeEvent);
     restoreEventHandler(c, "i.menu");
     restoreEventHandler(c, "menu");
     if(c.getTag("autosync") == "true") restoreEventHandler(c, "resumed");
-    var frozenItIds = getFrozenItIds(c)
-      , it;
-    frozenItIds.forEach(function (itId, ind) {
-      if(it = c.getItemById(itId)) {
+    c.getAllItems().forEach(function(it){
+      if(isFrozen(it))
         unfreezeEffect(it);
+    });
+    var cs = screen.getAllContainersById(c.getId());
+    cs.forEach(function(c){
+      var opener;
+      if((opener = c.getOpener()) && opener.getType() == "Folder"){
+        if(isFrozen(opener))
+          unfreezeEffect(opener);
       }
-    })
-    frozenItIds.clear();
-    frozenItIds.queueSave();
+    });
   }
 }
 
-function runCmd(cmd, asRoot, newThread, callback) {
-  function execCmd(cmd) {
-    try {
-      var process = Runtime.getRuntime().exec(asRoot ? "su" : cmd)
-        , reader = new DataInputStream(process.getInputStream())
-        , writer = new DataOutputStream(process.getOutputStream());
+function isArray(object){
+  return Object.prototype.toString.call(object) == '[object Array]';
+}
 
-      if(asRoot) {
-        writer.writeBytes(cmd + '\n');
+/*
+ ATTENTION:
+ if multiple commands are executed as root, the output will be an array of the returned lines
+ if multiple commands are not executed as root, the output will be an array of returned outputs (which are themselves arrays of lines)
+ */
+function runCmd(cmds, asRoot, newThread, callback, onExecuted){
+  var handler = getHandler()
+    , output, process, reader, writer;
+
+  function execCmd(){
+    function checkCmd(cmd){
+      if(typeof(cmd) === "string"){
+        return true;
+      }else
+        handleGUIEdit(function(){
+          alert(cmd + " is not a string!");
+        });
+      return false;
+    }
+
+    function exec(cmd, writer){
+      if(checkCmd(cmd)){
+        writer.writeBytes(cmd + "\n");
         writer.flush();
-        writer.close();
+        return true;
       }
+      return false;
+    }
 
-      var tmp
-        , output = [];
-      while((tmp = reader.readLine()) != null) {
+    function readOutput(reader){
+      var tmp, output = [];
+      while((tmp = reader.readLine()) != null)
         output.push(tmp);
+
+      return output.length == 1 ? output[0] : output;
+    }
+
+    function handleCallback(callback, output){
+      if(typeof callback == "function"){
+        handler.post(function(){
+          callback(output);
+        });
+      }else if(callback){
+        handleGUIEdit(function(){
+          alert(callback + " is not a function!");
+        });
       }
-      reader.close();
-      process.waitFor();
-      return output;
-    } catch(err) {
-      alert(err + "At line " + err.lineNumber);
+    }
+
+    try{
+      if(asRoot){
+        process = Runtime.getRuntime().exec("su");
+        reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        writer = new DataOutputStream(process.getOutputStream());
+
+        if(isArray(cmds)){
+          output = [];
+          cmds.forEach(function(cmd){
+            if(exec(cmd, writer)){
+              handleCallback(onExecuted);
+            }
+          });
+
+          exec("exit", writer);
+          writer.close();
+
+          output = readOutput(reader);
+          handleCallback(callback, output);
+        }else{
+          var succes = exec(cmds, writer);
+
+          exec("exit", writer);
+          writer.close();
+
+          if(succes){
+            output = readOutput(reader);
+            handleCallback(onExecuted);
+            handleCallback(callback, output);
+          }
+        }
+
+        reader.close();
+        process.waitFor();
+      }else{
+        if(isArray(cmds)){
+          var outputs = [];
+          cmds.forEach(function(cmd){
+            if(checkCmd(cmd)){
+              process = Runtime.getRuntime().exec(cmd);
+              reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+              output = readOutput(reader);
+              reader.close();
+              outputs.push(output);
+              handleCallback(onExecuted);
+              handleCallback(callback, output);
+            }
+          });
+          process.waitFor();
+          return outputs;
+        }else{
+          process = Runtime.getRuntime().exec(cmds);
+          reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+          output = readOutput(reader);
+          reader.close();
+          process.waitFor();
+          handleCallback(onExecuted);
+          handleCallback(callback, output);
+          return output;
+        }
+      }
+    }catch(err){
+      handleGUIEdit(function(){
+        alert("At line " + err.lineNumber + ": " + err);
+      });
     }
   }
 
-  if(newThread == false) {
-    return execCmd(cmd);
-  } else {
-    var handler = getHandler();
-    startNewBackgroundThread(function () {
-      if(callback) {
-        var output = execCmd(cmd);
-        handler.post(function () {
-          callback(output);
-        });
-      } else {
-        execCmd(cmd)
-      }
+  if(asRoot && isArray(callback))
+    throw new Error("Multiple callbacks are not possible in su mode. Use onExecuteds instead.");
+
+  if(newThread === false){
+    return execCmd();
+  }else{
+    startNewBackgroundThread(function(){
+      execCmd();
     })
   }
 }
 
-function getPackageName(it) {
-  try {
+function getPackageName(it){
+  try{
     return it.getIntent().getComponent().getPackageName();
-  } catch(e) {
+  }catch(e){
     return null;
   }
 }
 
-function isFreezable(pkgName) {
+function isFreezable(pkgName){
   if(!pkgName)
     return false;
 
-  var onBlackList = false;
-  for(var i = 0; i < blackList.length; i++) {
-    if(pkgName == blackList[i]) {
+  var onBlackList = false, onWhiteList;
+  for(var i = 0; i < blackList.length; i++){
+    if(pkgName == blackList[i]){
       onBlackList = true;
       break;
     }
   }
 
-  if(whiteList.length == 0) {
-    var onWhiteList = true;
-  } else {
-    var onWhiteList = false;
-    for(var i = 0; i < whiteList.length; i++) {
-      if(pkgName == whiteList[i]) {
+  if(whiteList.length == 0){
+    onWhiteList = true;
+  }else{
+    onWhiteList = false;
+    for(var i = 0; i < whiteList.length; i++){
+      if(pkgName == whiteList[i]){
         onWhiteList = true;
         break;
       }
@@ -148,126 +241,188 @@ function isFreezable(pkgName) {
   return !onBlackList && onWhiteList;
 }
 
-function freeze(it, pkgName) {
-  runCmd("pm disable " + pkgName, true, true, function () {
-    freezeEffect(it);
-    var frozenItIds = getFrozenItIds(it.getParent());
-    frozenItIds.push(it.getId());
-    frozenItIds.queueSave();
-  });
+function freezeChecks(it, allGood, giveFeedback){
+  var pkgName = getPackageName(it)
+    , freezeAble = isFreezable(pkgName);
+  if(pkgName && freezeAble){
+    allGood(pkgName);
+  }else if(giveFeedback !== false){
+    if(!pkgName)
+      Toast.makeText(context, it + " doesn't launch an app!", Toast.LENGTH_SHORT).show();
+    else if(!freezeAble)
+      Toast.makeText(context, "Cannot freeze/unfreeze! (Probably because of black- or whitelist", Toast.LENGTH_SHORT).show();
+  }
 }
 
-function unfreeze(it, pkgName) {
-  runCmd("pm enable " + pkgName, true, true, function () {
-    unfreezeEffect(it);
-    var frozenItIds = getFrozenItIds(it.getParent());
-    frozenItIds.remove(it.getId());
-    frozenItIds.queueSave();
-  });
+function freeze(it){
+  if(it.getType() == "Folder"){
+    freezeContainer(it.getContainer());
+  }else{
+    freezeChecks(it, function(pkgName){
+      runCmd("pm disable " + pkgName, true, true, null, function(){
+        freezeEffect(it);
+      });
+    });
+  }
 }
 
-function freezeEffect(it) {
+function unfreeze(it){
+  if(it.getType() == "Folder"){
+    unfreezeContainer(it.getContainer());
+  }else{
+    freezeChecks(it, function(pkgName){
+      runCmd("pm enable " + pkgName, true, true, null, function(){
+        unfreezeEffect(it);
+      });
+    });
+  }
+}
+
+function freezeEffect(it){
   it.getProperties().edit().setInteger("s.iconColorFilter", 0x00ffffff).commit();
   it.setTag("frozen", true);
 }
 
-function unfreezeEffect(it) {
+function unfreezeEffect(it){
   it.getProperties().edit().setInteger("s.iconColorFilter", 0xffffffff).commit();
   it.setTag("frozen", false);
 }
 
-function getFrozenItIds(c) {
-  var cId = c.getId();
-  if(!frozenItIdss[cId])
-    frozenItIdss[cId] = new TagArray(c, "frozenItIds");
-  return frozenItIdss[cId];
+function batchFreezeAction(items, action, callback){
+  var frozenStateChecker, cmd, effect;
+  if(action == "freeze"){
+    frozenStateChecker = function(it){ return !isFrozen(it); };
+    cmd = "pm disable ";
+    effect = function(it){ freezeEffect(it); }
+  }else if(action == "unfreeze"){
+    frozenStateChecker = function(it){ return isFrozen(it); };
+    cmd = "pm enable ";
+    effect = function(it){ unfreezeEffect(it); }
+  }
+
+  var freezableItems = []
+    , cmds = [];
+
+  items.forEach(function(it){
+    if(frozenStateChecker(it)){
+      freezeChecks(it, function(pkgName){
+        freezableItems.push(it);
+        cmds.push(cmd + pkgName);
+      }, false);
+    }
+  });
+
+  if(cmds.length != 0){
+    var counter = 0;
+    runCmd(cmds, true, true, function(){
+      callback();
+    }, function(){
+      effect(freezableItems[counter]);
+      counter++;
+    });
+  }
 }
 
-function getFrozenApps() {
-  if(!frozenApps) {
-    frozenApps = runCmd("pm list packages -d", false, false);
-    for(var i = 0; i < frozenApps.length; i++) {
-      frozenApps[i] = frozenApps[i].split(":")[1];
-    }
+function containerFreezeAction(c, effect){
+  var cs = screen.getAllContainersById(c.getId());
+  cs.forEach(function(c){
+    var opener;
+    if((opener = c.getOpener()) && opener.getType() == "Folder")
+      effect(opener);
+  });
+}
+
+function freezeContainer(c){
+  batchFreezeAction(c.getAllItems(), "freeze", function(){
+    containerFreezeAction(c, freezeEffect);
+  });
+}
+
+function unfreezeContainer(c){
+  batchFreezeAction(c.getAllItems(), "unfreeze", function(){
+    containerFreezeAction(c, unfreezeEffect);
+  });
+}
+
+function isFrozen(it){
+  return it.getTag("frozen") == "true";
+}
+
+function getFrozenApps(){
+  if(frozenApps == null){
+    frozenApps = [];
+    var pkgs = runCmd("pm list packages -d", false, false);
+    pkgs.forEach(function(pkg, i){
+      frozenApps[i] = pkg.split(":")[1];
+    });
   }
   return frozenApps;
 }
 
-function syncContainer(c) {
-  startNewBackgroundThread(function () {
+function syncContainer(c){
+  startNewBackgroundThread(function(){
     var items = c.getItems();
-    for(var i = 0; i < items.length; i++) {
+    for(var i = 0; i < items.length; i++){
       syncItem(items.getAt(i));
     }
   });
 }
 
-function syncItem(it) {
-  var c = it.getParent()
-    , frozenItIds = getFrozenItIds(c)
-    , frozenApps = getFrozenApps();
-  if(it.getType() == "Shortcut") {
+function syncItem(it){
+  var frozenApps = getFrozenApps();
+  if(it.getType() == "Shortcut"){
     var pkgName = getPackageName(it);
-    if(pkgName && isFreezable(pkgName)) {
-      var matched = false
-        , isFrozen = it.getTag("frozen") == "true";
-      for(var j = 0; j < frozenApps.length; j++) {
-        if(pkgName == frozenApps[j]) {
-          matched = true;
-          break;
-        }
-      }
-      if(!isFrozen && matched) {
-        handleGUIEdit(function () {
+    if(pkgName && isFreezable(pkgName)){
+      var isFrozen = it.getTag("frozen") == "true";
+      var matched = frozenApps.some(function(pkg){
+        return pkg == pkgName;
+      });
+      if(!isFrozen && matched){
+        handleGUIEdit(function(){
           freezeEffect(it);
-        })
-        frozenItIds.push(it.getId());
-        frozenItIds.queueSave();
-      }
-      if(!matched && isFrozen) {
-        handleGUIEdit(function () {
+        });
+      }else if(isFrozen && !matched){
+        handleGUIEdit(function(){
           unfreezeEffect(it);
-        })
-        frozenItIds.remove(it.getId());
-        frozenItIds.queueSave();
+        });
       }
     }
   }
 }
 
-function handleGUIEdit(func) {
-  if(Looper.getMainLooper().getThread() == Thread.currentThread()) {
+function handleGUIEdit(func){
+  if(Looper.getMainLooper().getThread() == Thread.currentThread()){
     func();
-  } else {
+  }else{
     GUIHandler.post(func);
   }
 }
 
-function startNewBackgroundThread(func) {
-  var thread = new Thread(function () {
+function startNewBackgroundThread(func){
+  var thread = new Thread(function(){
     func();
-    if(threads[Thread.currentThread().getId()].prepared == true) {
-      Looper.myLooper().getQueue().addIdleHandler(function () {
+    if(threads[Thread.currentThread().getId()].prepared == true){
+      Looper.myLooper().getQueue().addIdleHandler(function(){
         Looper.myLooper().quitSafely();
-      })
+      });
       Looper.loop();
     }
-  })
-  thread.setUncaughtExceptionHandler(function (th, ex) {
-    handleGUIEdit(function () {
+  });
+  thread.setUncaughtExceptionHandler(function(th, ex){
+    handleGUIEdit(function(){
       alert(ex.getMessage());
-    })
-  })
+    });
+  });
   threads[thread.getId()] = {};
   thread.start();
 }
 
-function getHandler() {
-  if(Looper.getMainLooper().getThread() == Thread.currentThread()) {
+function getHandler(){
+  if(Looper.getMainLooper().getThread() == Thread.currentThread()){
     return GUIHandler;
-  } else {
+  }else{
     var threadId = Thread.currentThread().getId();
-    if(threads[threadId].prepared != true) {
+    if(threads[threadId].prepared != true){
       Looper.prepare();
       threads[threadId].prepared = true;
     }
@@ -275,129 +430,78 @@ function getHandler() {
   }
 }
 
-function TagArray(ob, name, manualSave) {
-  this.push.apply(this, JSON.parse(ob.getTag(name)) || []);
-  var me = this;
-  this.save = function () {
-    ob.setTag(name, JSON.stringify(Array.prototype.slice.call(me)));
-  }
-  if(manualSave != true) this.queueSave();
-}
-
-TagArray.prototype = new Array();
-TagArray.prototype.constructor = TagArray;
-TagArray.prototype.saveQueued = false;
-
-TagArray.prototype.queueSave = function () {
-  if(!this.queueSaved) {
-    getHandler().post(this.save)
-    this.queueSaved = true;
-  }
-}
-
-TagArray.prototype.remove = function (el) {
-  var ind = this.indexOf(el);
-  if(ind != -1)
-    this.splice(ind, 1);
-  else
-    return false;
-}
-
-TagArray.prototype.clear = function () {
-  this.length = 0;
-}
-
-if(typeof getEvent != "undefined") {
-  var e = getEvent()
+if(typeof getEvent != "undefined"){
+  var c
+    , e = getEvent()
     , it = e.getItem()
     , data = e.getData();
-  if(data) {
-    if(data.length == 4) {
-      var c;
-      if(it) {
-        syncContainer(it.getParent());
-      } else if(c = e.getContainer()) {
+  if(data){
+    if(data == "sync"){
+      if(c = e.getContainer()){
         syncContainer(c);
-      } else {
+      }else{
         throw new Error("Could not find a way to determine the container to sync. Run the script from an item in the container or from the container itself or add the container id directly afrer 'sync'.")
       }
-    } else if(data.substring(0, 4) == "sync") {
-      var cId = data.substring(4, data.length)
-        , c = screen.getContainerById(cId);
-      if(!c) throw new Error("Could not find container with id:" + cId)
+    }else if(data.substring(0, 4) == "sync"){
+      var cId = data.substring(4, data.length);
+      c = screen.getContainerById(cId);
+      if(!c) throw new Error("Could not find container with id:" + cId);
       syncContainer(c);
     }
-  } else {
-    if(!it) {
-      var cIds = new TagArray(script, "cIds", true);
-      var c = e.getContainer()
+  }else{
+    if(!it){
+      c = e.getContainer();
       cId = c.getId();
-      if(c.getTag("longTapFreeze") == "true") {
-        if(confirm("Are you sure you want to uninstall?")) {
+      if(c.getTag("longTapFreeze") == "true"){
+        if(confirm("Are you sure you want to uninstall?")){
           uninstall(c);
-          cIds.remove(c.getId());
-          cIds.save();
           Toast.makeText(context, "Uninstalled!", Toast.LENGTH_SHORT).show();
         }
-      } else {
-        if(confirm("Are you sure you want to install?")) {
-          cIds.push(c.getId());
+      }else{
+        if(confirm("Are you sure you want to install?")){
           c.setTag("longTapFreeze", true);
           setEventHandlerRestorably(c, freezeEvent, EventHandler.RUN_SCRIPT, script.getId());
           setEventHandlerRestorably(c, "i.menu", EventHandler.RUN_SCRIPT, script.getId());
           setEventHandlerRestorably(c, "menu", EventHandler.RUN_SCRIPT, script.getId());
-          if(confirm("Do you want to enable autosync?")) {
+          if(confirm("Do you want to enable autosync?")){
             setEventHandlerRestorably(c, "resumed", EventHandler.RUN_SCRIPT, script.getId() + "/sync");
             syncContainer(c);
             c.setTag("autosync", true);
           }
-          cIds.save();
           Toast.makeText(context, "Installed!", Toast.LENGTH_SHORT).show();
         }
       }
-    } else {
+    }else{
       //long tap
       var src = e.getSource();
-      if(src == freezeSource) {
-        var c = it.getParent()
-          , pkgName = getPackageName(it)
-          , freezeAble = isFreezable(pkgName);
-        if(pkgName && freezeAble) {
-          if(it.getTag("frozen") == "true") {
-            unfreeze(it, pkgName);
-          } else {
-            freeze(it, pkgName);
-          }
-        } else if(!pkgName) {
-          Toast.makeText(context, it + " doesn't launch an app!", Toast.LENGTH_SHORT).show();
-        } else if(!freezeAble) {
-          Toast.makeText(context, "Cannot freeze/unfreeze! (Probably because of black- or whitelist", Toast.LENGTH_SHORT).show();
+      if(src == freezeSource){
+        if(isFrozen(it)){
+          unfreeze(it);
+        }else{
+          freeze(it);
         }
       }
     }
   }
-} else if(menu) {
-  var mode = menu.getMode()
-  if(mode == Menu.MODE_ITEM_SUBMENU_ACTION || mode == Menu.MODE_ITEM_NO_EM) {
-    menu.addMainItem("Sync frozen-state", function () {
+}else if(menu){
+  var mode = menu.getMode();
+  if(mode == Menu.MODE_ITEM_SUBMENU_ACTION || mode == Menu.MODE_ITEM_NO_EM){
+    menu.addMainItem("Sync frozen-state", function(){
       syncItem(item);
       menu.close();
     });
-  } else if(mode == Menu.MODE_CONTAINER_SUBMENU_ITEMS) {
-    menu.addMainItem("Sync frozen-state", function () {
-      syncContainer(container)
+  }else if(mode == Menu.MODE_CONTAINER_SUBMENU_ITEMS){
+    menu.addMainItem("Sync frozen-state", function(){
+      syncContainer(container);
+      menu.close();
+    });
+    menu.addMainItem("Freeze all items", function(){
+      freezeContainer(container);
+      menu.close();
+    });
+    menu.addMainItem("Unfreeze all items", function(){
+      unfreezeContainer(container);
       menu.close();
     });
   }
 }
-
-/* uninstall everywhere
-if(confirm("Are you sure you want to uninstall from every container?")) {
-          for(var i = 0; i < cIds.length; i++) {
-            uninstall(screen.getContainerById(cIds[i]));
-          }
-          cIds.clear();
-          cIds.save();
-          Toast.makeText(context, "Uninstalled everywhere!", Toast.LENGTH_SHORT).show();
-        }
-*/
