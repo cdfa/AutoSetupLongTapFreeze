@@ -53,6 +53,7 @@ function uninstall(c){
   if(c && c.getTag("longTapFreeze")){
     c.setTag("longTapFreeze", false);
     restoreEventHandler(c, freezeEvent);
+    restoreEventHandler(c, 'i.tap');
     restoreEventHandler(c, "i.menu");
     restoreEventHandler(c, "menu");
     if(c.getTag("autosync") === "true") restoreEventHandler(c, "resumed");
@@ -350,25 +351,29 @@ function freezeChecks(it, allGood, giveFeedback){
   }
 }
 
-function freeze(it){
+function freeze(it, callback){
   if(it.getType() === "Folder"){
     freezeContainer(it.getContainer());
   }else{
     freezeChecks(it, function(pkgName){
       runCmd("pm disable " + pkgName, true, true, null, function(){
         freezeEffect(it);
+        if(typeof callback === 'function')
+          callback();
       });
     });
   }
 }
 
-function unfreeze(it){
+function unfreeze(it, callback){
   if(it.getType() === "Folder"){
     unfreezeContainer(it.getContainer());
   }else{
     freezeChecks(it, function(pkgName){
       runCmd("pm enable " + pkgName, true, true, null, function(){
         unfreezeEffect(it);
+        if(typeof callback === 'function')
+          callback();
       });
     });
   }
@@ -517,6 +522,7 @@ if(typeof getEvent !== "undefined"){
         if(confirm("Are you sure you want to install?")){
           c.setTag("longTapFreeze", true);
           setEventHandlerRestorably(c, freezeEvent, EventHandler.RUN_SCRIPT, script.getId());
+          setEventHandlerRestorably(c, 'i.tap', EventHandler.RUN_SCRIPT, script.getId());
           setEventHandlerRestorably(c, "i.menu", EventHandler.RUN_SCRIPT, script.getId());
           setEventHandlerRestorably(c, "menu", EventHandler.RUN_SCRIPT, script.getId());
           if(confirm("Do you want to enable autosync?")){
@@ -528,7 +534,6 @@ if(typeof getEvent !== "undefined"){
         }
       }
     }else{
-      //long tap
       var src = e.getSource();
       if(src === freezeSource){
         if(isFrozen(it)){
@@ -536,6 +541,13 @@ if(typeof getEvent !== "undefined"){
         }else{
           freeze(it);
         }
+      }else if(src === 'I_CLICK'){
+        if( isFrozen(it) && confirm("Unfreeze and run?"))
+          unfreeze(it, function(){
+            it.launch();
+          });
+        else
+          it.launch();
       }
     }
   }
