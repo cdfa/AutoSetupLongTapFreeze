@@ -2,21 +2,19 @@ var blackList = ["net.pierrox.lightning_launcher_extreme"]
   , whiteList = []
   // for Sources see: http://www.lightninglauncher.com/scripting/reference/api/reference/net/pierrox/lightning_launcher/script/api/Event.html
   // for Events see http://www.lightninglauncher.com/scripting/reference/api/reference/net/pierrox/lightning_launcher/script/api/PropertySet.html
-  // you may only have to set 1 in the future.
   , freezeSource = "I_LONG_CLICK"
   , freezeEvent = "i.longTap";
 
 bindClass("android.widget.Toast");
 bindClass("android.content.pm.PackageManager");
-bindClass('java.lang.Runtime');
+bindClass("java.lang.Thread");
+bindClass("android.os.Handler");
+bindClass("android.os.Looper");
 bindClass('java.io.BufferedReader');
 bindClass('java.io.InputStreamReader');
 bindClass('java.io.DataOutputStream');
 bindClass('java.lang.StringBuffer');
-bindClass("java.lang.Runnable");
-bindClass("java.lang.Thread");
-bindClass("android.os.Handler");
-bindClass("android.os.Looper");
+bindClass('java.lang.Runtime');
 
 var script = getCurrentScript()
   , screen = getActiveScreen()
@@ -57,7 +55,7 @@ function uninstall(c){
     restoreEventHandler(c, freezeEvent);
     restoreEventHandler(c, "i.menu");
     restoreEventHandler(c, "menu");
-    if(c.getTag("autosync") == "true") restoreEventHandler(c, "resumed");
+    if(c.getTag("autosync") === "true") restoreEventHandler(c, "resumed");
     c.getAllItems().forEach(function(it){
       if(isFrozen(it))
         unfreezeEffect(it);
@@ -65,7 +63,7 @@ function uninstall(c){
     var cs = screen.getAllContainersById(c.getId());
     cs.forEach(function(c){
       var opener;
-      if((opener = c.getOpener()) && opener.getType() == "Folder"){
+      if((opener = c.getOpener()) && opener.getType() === "Folder"){
         if(isFrozen(opener))
           unfreezeEffect(opener);
       }
@@ -79,7 +77,61 @@ function uninstall(c){
  * @returns {boolean}
  */
 function isArray(object){
-  return Object.prototype.toString.call(object) == '[object Array]';
+  return Object.prototype.toString.call(object) === '[object Array]';
+}
+
+/**
+ * If this function is executed in a thread that is the main GUI thread, execute func, or else execute func in the main GUI thread. (Android doesn't like it when you change the GUI outside of the main GUI thread)
+ * @param func {function}
+ */
+function handleGUIEdit(func){
+  if(Looper.getMainLooper().getThread() === Thread.currentThread()){
+    func();
+  }else{
+    GUIHandler.post(func);
+  }
+}
+
+/**
+ * Starts a new background thread with func.
+ * @param func {function} - The function the thread executes.
+ */
+function startNewBackgroundThread(func){
+  var thread = new Thread(function(){
+    func();
+    // if a looper was initialized in func, make sure the thread can die by stopping the thread when the Looper idles.
+    if(threads[Thread.currentThread().getId()].prepared === true){
+      Looper.myLooper().getQueue().addIdleHandler(function(){
+        Looper.myLooper().quitSafely();
+      });
+      Looper.loop();
+    }
+  });
+  thread.setUncaughtExceptionHandler(function(th, ex){
+    handleGUIEdit(function(){
+      alert(ex.getMessage());
+    })
+  });
+  threads[thread.getId()] = {};
+  thread.start();
+}
+
+//noinspection JSValidateJSDoc
+/**
+ * Gets a handler for the current thread and initializes a looper if necessary.
+ * @returns {Handler}
+ */
+function getHandler(){
+  if(Looper.getMainLooper().getThread() === Thread.currentThread()){
+    return GUIHandler;
+  }else{
+    var threadId = Thread.currentThread().getId();
+    if(threads[threadId].prepared !== true){
+      Looper.prepare();
+      threads[threadId].prepared = true;
+    }
+    return new Handler();
+  }
 }
 
 /**
@@ -107,9 +159,7 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
     , output, process, reader, writer;
 
   // set optional arguments
-  if(asRoot == null)
-    asRoot = false;
-  if(newThread == null)
+  if(newThread !== false)
     newThread = true;
 
   /**
@@ -132,6 +182,7 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
       return false;
     }
 
+    //noinspection JSValidateJSDoc
     /**
      * Actually executes command.
      * @param cmd {string}
@@ -147,6 +198,7 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
       return false;
     }
 
+    //noinspection JSValidateJSDoc
     /**
      * Read the output from the reader.
      * @param reader {BufferedReader}
@@ -154,10 +206,10 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
      */
     function readOutput(reader){
       var tmp, output = [];
-      while((tmp = reader.readLine()) != null)
+      while((tmp = reader.readLine()) !== null)
         output.push(tmp);
 
-      return output.length == 1 ? output[0] : output;
+      return output.length === 1 ? output[0] : output;
     }
 
     /**
@@ -166,7 +218,7 @@ function runCmd(cmds, asRoot, newThread, callback, onExecuted){
      * @param output {Array} - The argument that is passed to the callback
      */
     function handleCallback(callback, output){
-      if(typeof callback == "function"){
+      if(typeof callback === "function"){
         handler.post(function(){
           callback(output);
         });
@@ -269,24 +321,17 @@ function isFreezable(pkgName){
   if(!pkgName)
     return false;
 
-  var onBlackList = false, onWhiteList;
-  for(var i = 0; i < blackList.length; i++){
-    if(pkgName == blackList[i]){
-      onBlackList = true;
-      break;
-    }
-  }
+  var onWhiteList,
+    onBlackList = blackList.some(function(pkg){
+      return pkg === pkgName;
+    });
 
-  if(whiteList.length == 0){
+  if(whiteList.length === 0){
     onWhiteList = true;
   }else{
-    onWhiteList = false;
-    for(var i = 0; i < whiteList.length; i++){
-      if(pkgName == whiteList[i]){
-        onWhiteList = true;
-        break;
-      }
-    }
+    onWhiteList = whiteList.some(function(pkg){
+      return pkg === pkgName;
+    });
   }
 
   return !onBlackList && onWhiteList;
@@ -306,7 +351,7 @@ function freezeChecks(it, allGood, giveFeedback){
 }
 
 function freeze(it){
-  if(it.getType() == "Folder"){
+  if(it.getType() === "Folder"){
     freezeContainer(it.getContainer());
   }else{
     freezeChecks(it, function(pkgName){
@@ -318,7 +363,7 @@ function freeze(it){
 }
 
 function unfreeze(it){
-  if(it.getType() == "Folder"){
+  if(it.getType() === "Folder"){
     unfreezeContainer(it.getContainer());
   }else{
     freezeChecks(it, function(pkgName){
@@ -341,11 +386,11 @@ function unfreezeEffect(it){
 
 function batchFreezeAction(items, action, callback){
   var frozenStateChecker, cmd, effect;
-  if(action == "freeze"){
+  if(action === "freeze"){
     frozenStateChecker = function(it){ return !isFrozen(it); };
     cmd = "pm disable ";
     effect = function(it){ freezeEffect(it); }
-  }else if(action == "unfreeze"){
+  }else if(action === "unfreeze"){
     frozenStateChecker = function(it){ return isFrozen(it); };
     cmd = "pm enable ";
     effect = function(it){ unfreezeEffect(it); }
@@ -363,7 +408,7 @@ function batchFreezeAction(items, action, callback){
     }
   });
 
-  if(cmds.length != 0){
+  if(cmds.length !== 0){
     var counter = 0;
     runCmd(cmds, true, true, function(){
       callback();
@@ -378,7 +423,7 @@ function containerFreezeAction(c, effect){
   var cs = screen.getAllContainersById(c.getId());
   cs.forEach(function(c){
     var opener;
-    if((opener = c.getOpener()) && opener.getType() == "Folder")
+    if((opener = c.getOpener()) && opener.getType() === "Folder")
       effect(opener);
   });
 }
@@ -396,11 +441,11 @@ function unfreezeContainer(c){
 }
 
 function isFrozen(it){
-  return it.getTag("frozen") == "true";
+  return it.getTag("frozen") === 'true';
 }
 
 function getFrozenApps(){
-  if(frozenApps == null){
+  if(typeof frozenApps === 'undefined'){
     frozenApps = [];
     var pkgs = runCmd("pm list packages -d", false, false);
     pkgs.forEach(function(pkg, i){
@@ -421,12 +466,12 @@ function syncContainer(c){
 
 function syncItem(it){
   var frozenApps = getFrozenApps();
-  if(it.getType() == "Shortcut"){
+  if(it.getType() === "Shortcut"){
     var pkgName = getPackageName(it);
     if(pkgName && isFreezable(pkgName)){
-      var isFrozen = it.getTag("frozen") == "true";
+      var isFrozen = it.getTag("frozen") === 'true';
       var matched = frozenApps.some(function(pkg){
-        return pkg == pkgName;
+        return pkg === pkgName;
       });
       if(!isFrozen && matched){
         handleGUIEdit(function(){
@@ -441,72 +486,19 @@ function syncItem(it){
   }
 }
 
-/**
- * If this function is executed in a thread that is the main GUI thread, execute func, or else execute func in the main GUI thread. (Android doesn't like it when you change the GUI outside of the main GUI thread)
- * @param func {function}
- */
-function handleGUIEdit(func){
-  if(Looper.getMainLooper().getThread() == Thread.currentThread()){
-    func();
-  }else{
-    GUIHandler.post(func);
-  }
-}
-
-/**
- * Starts a new background thread with func.
- * @param func {function} - The function the thread executes.
- */
-function startNewBackgroundThread(func){
-  var thread = new Thread(function(){
-    func();
-    // if a looper was initialized in func, make sure the thread can die by stopping the thread when the Looper idles.
-    if(threads[Thread.currentThread().getId()].prepared == true){
-      Looper.myLooper().getQueue().addIdleHandler(function(){
-        Looper.myLooper().quitSafely();
-      });
-      Looper.loop();
-    }
-  });
-  thread.setUncaughtExceptionHandler(function(th, ex){
-    handleGUIEdit(function(){
-      alert(ex.getMessage());
-    })
-  });
-  threads[thread.getId()] = {};
-  thread.start();
-}
-
-/**
- * Gets a handler for the current thread and initializes a looper if necessary.
- * @returns {Handler}
- */
-function getHandler(){
-  if(Looper.getMainLooper().getThread() == Thread.currentThread()){
-    return GUIHandler;
-  }else{
-    var threadId = Thread.currentThread().getId();
-    if(threads[threadId].prepared != true){
-      Looper.prepare();
-      threads[threadId].prepared = true;
-    }
-    return new Handler();
-  }
-}
-
-if(typeof getEvent != "undefined"){
+if(typeof getEvent !== "undefined"){
   var c
     , e = getEvent()
     , it = e.getItem()
     , data = e.getData();
   if(data){
-    if(data == "sync"){
+    if(data === "sync"){
       if(c = e.getContainer()){
         syncContainer(c);
       }else{
         throw new Error("Could not find a way to determine the container to sync. Run the script from an item in the container or from the container itself or add the container id directly afrer 'sync'.")
       }
-    }else if(data.substring(0, 4) == "sync"){
+    }else if(data.substring(0, 4) === "sync"){
       var cId = data.substring(4, data.length);
       c = screen.getContainerById(cId);
       if(!c) throw new Error("Could not find container with id:" + cId);
@@ -516,7 +508,7 @@ if(typeof getEvent != "undefined"){
     if(!it){
       c = e.getContainer();
       cId = c.getId();
-      if(c.getTag("longTapFreeze") == "true"){
+      if(c.getTag("longTapFreeze") === "true"){
         if(confirm("Are you sure you want to uninstall?")){
           uninstall(c);
           Toast.makeText(context, "Uninstalled!", Toast.LENGTH_SHORT).show();
@@ -538,7 +530,7 @@ if(typeof getEvent != "undefined"){
     }else{
       //long tap
       var src = e.getSource();
-      if(src == freezeSource){
+      if(src === freezeSource){
         if(isFrozen(it)){
           unfreeze(it);
         }else{
@@ -549,12 +541,12 @@ if(typeof getEvent != "undefined"){
   }
 }else if(menu){
   var mode = menu.getMode();
-  if(mode == Menu.MODE_ITEM_SUBMENU_ACTION || mode == Menu.MODE_ITEM_NO_EM){
+  if(mode === Menu.MODE_ITEM_SUBMENU_ACTION || mode === Menu.MODE_ITEM_NO_EM){
     menu.addMainItem("Sync frozen-state", function(){
       syncItem(item);
       menu.close();
     });
-  }else if(mode == Menu.MODE_CONTAINER_SUBMENU_ITEMS){
+  }else if(mode === Menu.MODE_CONTAINER_SUBMENU_ITEMS){
     menu.addMainItem("Sync frozen-state", function(){
       syncContainer(container);
       menu.close();
