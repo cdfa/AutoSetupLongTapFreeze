@@ -341,13 +341,22 @@ function isFreezable(pkgName){
 function freezeChecks(it, allGood, giveFeedback){
   var pkgName = getPackageName(it)
     , freezeAble = isFreezable(pkgName);
+
+  if(pkgName && freezeAble && it.getLabel().charAt(0) === "!"){
+    if(giveFeedback !== false && confirm(it + "\nIs '!' protected app, really (un)freeze?")){
+      freezeAble = true;
+    }else{
+      freezeAble = false;
+    }
+  }
+
   if(pkgName && freezeAble){
     allGood(pkgName);
   }else if(giveFeedback !== false){
     if(!pkgName)
-      Toast.makeText(context, it + " doesn't launch an app!", Toast.LENGTH_SHORT).show();
+      Toast.makeText(context, it + "\nDoesn't launch an app!", Toast.LENGTH_SHORT).show();
     else if(!freezeAble)
-      Toast.makeText(context, "Cannot freeze/unfreeze! (Probably because of black- or whitelist", Toast.LENGTH_SHORT).show();
+      Toast.makeText(context, it + "\nCannot (un)freeze!\nProbably because of black/white list.", Toast.LENGTH_SHORT).show();
   }
 }
 
@@ -425,12 +434,15 @@ function batchFreezeAction(items, action, callback){
 }
 
 function containerFreezeAction(c, effect){
+// Disabled - Long tap freeze effect and freeze state on Folders
+/*
   var cs = screen.getAllContainersById(c.getId());
   cs.forEach(function(c){
     var opener;
     if((opener = c.getOpener()) && opener.getType() === "Folder")
       effect(opener);
   });
+*/
 }
 
 function freezeContainer(c){
@@ -541,13 +553,17 @@ if(typeof getEvent !== "undefined"){
         }else{
           freeze(it);
         }
-      }else if(src === 'I_CLICK'){
-        if( isFrozen(it) && confirm("Unfreeze and run?"))
-          unfreeze(it, function(){
+      }else{
+        if(src === 'I_CLICK' && it.getType() != 'Widget'){
+          if(isFrozen(it)){
+            if(confirm(it + "\nUnfreeze and run?")){
+              unfreeze(it, function(){
+                it.launch();
+              });
+            }
+          }else
             it.launch();
-          });
-        else
-          it.launch();
+        }
       }
     }
   }
